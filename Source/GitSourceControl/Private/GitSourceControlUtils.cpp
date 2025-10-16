@@ -1729,7 +1729,7 @@ bool UpdateChangelistStateByCommand()
 		FString File = GetFullPathFromGitStatus(Result, Provider.GetPathToRepositoryRoot());
 		TSharedRef<FGitSourceControlState, ESPMode::ThreadSafe> State = Provider.GetStateInternal(File);
 		// Staged check
-		if (!TChar<TCHAR>::IsWhitespace(Result[0]))
+		if (Result[0] != TEXT('?') && !TChar<TCHAR>::IsWhitespace(Result[0]))
 		{
 			WorkingChangelist->Files.Remove(State);
 			UpdateFileStagingOnSavedInternal(Result);
