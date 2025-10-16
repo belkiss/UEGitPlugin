@@ -5,11 +5,13 @@
 
 #include "GitSourceControlOperations.h"
 
+#include "Algo/Transform.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlModule.h"
 #include "GitSourceControlModule.h"
+#include "GitSourceControlChangelistState.h"
 #include "GitSourceControlCommand.h"
 #include "GitSourceControlUtils.h"
 #include "SourceControlHelpers.h"
@@ -175,21 +177,33 @@ bool FGitCheckInWorker::Execute(FGitSourceControlCommand& InCommand)
 
 	TSharedRef<FCheckIn, ESPMode::ThreadSafe> Operation = StaticCastSharedRef<FCheckIn>(InCommand.Operation);
 
+	FGitSourceControlProvider& Provider = FGitSourceControlModule::Get().GetProvider();
+
+	TArray<FString> FilesToSubmit = InCommand.Files;
+
+	// Adds changelist's files to FilesToSubmit so we can update their state after submit
+	if ((FilesToSubmit.Num() == 0) && (InCommand.Changelist.IsInitialized()))
+	{
+		TSharedRef<FGitSourceControlChangelistState, ESPMode::ThreadSafe> ChangelistState = Provider.GetStateInternal(InCommand.Changelist);
+		Algo::Transform(ChangelistState->GetFilesStates(), FilesToSubmit, [](const FSourceControlStateRef& FileState)
+		{
+			return FileState->GetFilename();
+		});
+	}
+
 	// make a temp file to place our commit message in
-	bool bDoCommit = InCommand.Files.Num() > 0;
+	bool bDoCommit = FilesToSubmit.Num() > 0;
 	const FText& CommitMsg = bDoCommit ? Operation->GetDescription() : EmptyCommitMsg;
 	FGitScopedTempFile CommitMsgFile(CommitMsg);
 	if (CommitMsgFile.GetFilename().Len() > 0)
 	{
-		FGitSourceControlProvider& Provider = FGitSourceControlModule::Get().GetProvider();
-
 		if (bDoCommit)
 		{
 			FString ParamCommitMsgFilename = TEXT("--file=\"");
 			ParamCommitMsgFilename += FPaths::ConvertRelativePathToFull(CommitMsgFile.GetFilename());
 			ParamCommitMsgFilename += TEXT("\"");
 			TArray<FString> CommitParameters {ParamCommitMsgFilename};
-			const TArray<FString>& FilesToCommit = GitSourceControlUtils::RelativeFilenames(InCommand.Files, InCommand.PathToRepositoryRoot);
+			const TArray<FString>& FilesToCommit = GitSourceControlUtils::RelativeFilenames(FilesToSubmit, InCommand.PathToRepositoryRoot);
 
 			// If no files were committed, this is false, so we treat it as if we never wanted to commit in the first place.
 			bDoCommit = GitSourceControlUtils::RunCommit(InCommand.PathToGitBinary, InCommand.PathToRepositoryRoot, CommitParameters,
@@ -201,7 +215,7 @@ bool FGitCheckInWorker::Execute(FGitSourceControlCommand& InCommand)
 		{
 			// Remove any deleted files from status cache
 			TArray<TSharedRef<ISourceControlState, ESPMode::ThreadSafe>> LocalStates;
-			Provider.GetState(InCommand.Files, LocalStates, EStateCacheUsage::Use);
+			Provider.GetState(FilesToSubmit, LocalStates, EStateCacheUsage::Use);
 			for (const auto& State : LocalStates)
 			{
 				if (State->IsDeleted())
@@ -236,7 +250,7 @@ bool FGitCheckInWorker::Execute(FGitSourceControlCommand& InCommand)
 		}
 
 		bool bUnpushedFiles;
-		TSet<FString> FilesToCheckIn {InCommand.Files};
+		TSet<FString> FilesToCheckIn { FilesToSubmit };
 		if (bDiffSuccess)
 		{
 			// Only push if we have a difference (any commits at all, not just the one we just did)
